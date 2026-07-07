@@ -51,9 +51,16 @@ npm-debug.log*
 coverage/
 .coverage
 htmlcov/
+.pytest_cache/
 
 # Secrets
 secrets/
 credentials.json
 token.json
 *.pem
+.env.*
+!.env.example
+!.env.sample
+.next/
+.turbo/
+out/

@@ -1,0 +1,33 @@
+{
+  "expo": {
+    "name": "Voice Agent",
+    "slug": "voice-agent",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Voice Agent records audio after you trigger listening so it can transcribe spoken commands."
+      }
+    },
+    "android": {
+      "permissions": [
+        "RECORD_AUDIO"
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#f6f2eb"
+      }
+    },
+    "extra": {
+      "apiUrl": "http://192.168.1.149:8000",
+      "wsUrl": "ws://192.168.1.149:8000"
+    },
+    "plugins": [
+      "expo-asset"
+    ]
+  }
+}

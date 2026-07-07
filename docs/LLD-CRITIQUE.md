@@ -15,7 +15,7 @@ The LLD covers most areas but has **gaps in specific technical integrations** an
 | AI Agent (LangGraph) | ✅ Good | Using pre-built, not custom |
 | CLI Tool Wrappers | ✅ Good | gws & m365 commands mapped |
 | OAuth Flow | ✅ Good | Detailed with encryption |
-| Database Schema | ✅ Good | PostgreSQL + Redis |
+| Database Schema | ✅ Good | Supabase Postgres + durable app tables |
 | API Contracts | ✅ Good | REST + WebSocket defined |
 | Security | ✅ Good | Token management clear |
 
@@ -153,7 +153,7 @@ The LLD covers most areas but has **gaps in specific technical integrations** an
 - Actual deployment architecture diagram
 - How many instances? Auto-scaling rules?
 - Database hosting (Cloud SQL?)
-- Redis hosting (Memorystore?)
+- Supabase project layout and backup policy?
 - Domain, SSL, CDN setup
 
 ---
