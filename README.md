@@ -1,120 +1,112 @@
 # Voice AI Workspace Agent
 
-A mobile-first voice AI workspace agent for Google Workspace and Microsoft 365, built around DeepAgents for orchestration and Composio for external integrations.
+A voice-first mobile agent that runs your Google Workspace and Microsoft 365 by speaking, and refuses to touch anything risky without your approval.
 
-This repo now contains a real full-stack scaffold:
-- `apps/server`: FastAPI backend
-- `apps/mobile`: Expo React Native mobile app
-- `docs`: architecture, LLD, UI system, and environment contract
+## What it does
 
-## Product Direction
+Hold the talk button and speak. The app records the turn, sends the audio to Groq Whisper for transcription, and hands the text to the agent. The agent decides what workspace action the request maps to, runs read-only actions immediately, and pauses on any write until you confirm it. The result comes back as text in the thread and as a short spoken summary through Gemini TTS.
 
-- Voice-first UX with text fallback
-- Wake-word assistant target with hold-to-talk fallback
-- Clean chat interface with explicit approval states
-- Composio-managed Google Workspace and Microsoft 365 integrations
-- DeepAgents as the agent runtime
-- Reliable execution with audit logs, retries, and graceful degradation
+A typical turn:
 
-## Reliability Posture
+- "Show my calendar today" transcribes, runs `GOOGLECALENDAR_FIND_EVENT` through Composio, and reads the result back.
+- "Email alex@acme.com the notes" transcribes, drafts the send, and stops. An approval card appears with the exact recipient, subject, and body. Nothing is sent until you tap confirm.
+- "Stop" or "never mind" cancels the turn, stops playback, and returns to idle.
 
-The system should be engineered for production-grade reliability, but no honest architecture can promise literal 100% uptime or success across mobile devices, networks, and third-party APIs.
+Voice is the primary surface, but text input works for every path, and a short follow-up window after each spoken reply lets you continue without repeating the trigger.
 
-This design targets:
-- strong observability
-- safe write approvals
-- graceful degradation
-- no silent failure
-- clean recovery paths
+## The reliability posture
 
-## Current Docs
+This is the part the project is built around. A mobile app that talks to third-party APIs cannot promise perfect uptime, so the design targets high reliability, fast recovery, and zero silent failure instead.
 
-- [Architecture v4](/Users/mugilansakthivel/Developer/voice/docs/ARCHITECTURE-v2.md)
-- [LLD](/Users/mugilansakthivel/Developer/voice/docs/LLD-Voice-AI-Agent.md)
-- [UI System](/Users/mugilansakthivel/Developer/voice/docs/UI-SYSTEM.md)
-- [Environment Variables](/Users/mugilansakthivel/Developer/voice/docs/ENVIRONMENT.md)
-- [LLD Critique](/Users/mugilansakthivel/Developer/voice/docs/LLD-CRITIQUE.md)
+**Approval-gated writes.** The agent never sends an email, creates a meeting with attendees, shares a file, posts to a shared space, or deletes data on its own. Those actions become a pending approval record with the full tool name and arguments attached. The write only executes after an explicit confirm, and the confirm endpoint re-checks that the approval belongs to the requesting user and is still pending before it runs — a rejected or already-resolved approval returns a `409` and performs no side effect. Read-only actions (listing calendars, searching files) skip the gate.
 
-## Project Structure
+**Audit trail.** Every thread, message, approval, and connected account is a durable record. When a database is configured they persist to Supabase Postgres; without one the same store runs in memory so the flow still works end to end. Each approval keeps who requested it, the tool, the arguments, and its resolution, so any write can be reconstructed after the fact.
 
-```text
-apps/
-  mobile/   Expo app with clean assistant-style UI
-  server/   FastAPI API, approvals, voice routes, Composio and Supabase services
-docs/
-  architecture, LLD, UI, env contract
+**Graceful degradation.** Missing configuration downgrades instead of crashing. With no Composio key, tool execution returns a labeled dry-run result rather than an error. With no STT or TTS key, the voice service returns an empty transcript or text-only response and the thread keeps working. If a Composio account is absent or not yet ready, the agent says so in plain language and points you to the Integrations screen instead of failing silently. On the client, a failed transcription or tool call surfaces a spoken and on-screen recovery message, and TTS failure still leaves the text reply in the thread.
+
+## Architecture
+
+Two apps: an Expo React Native client and a stateless FastAPI backend. The backend owns the agent, the approval state machine, the voice pipeline, and the Composio broker.
+
+```mermaid
+flowchart TD
+    subgraph Mobile["Mobile app — Expo React Native"]
+        V[Hold-to-talk capture] --> STTc[Upload audio]
+        Chat[assistant-ui thread] 
+        Appr[Approval card]
+        Play[Spoken summary — expo-speech]
+    end
+
+    subgraph API["Backend — FastAPI, stateless"]
+        Voice["/voice/stt · /voice/tts"]
+        ChatR["/chat"]
+        ApprR["/approvals/:id/confirm · /reject"]
+        Intg["/integrations"]
+        Runtime[Agent runtime — intent to tool proposal]
+        Store[App store — threads · messages · approvals]
+    end
+
+    subgraph Ext["External services"]
+        Groq[Groq Whisper STT]
+        Gemini[Gemini TTS]
+        Composio[Composio broker]
+        PG[(Supabase Postgres)]
+    end
+
+    STTc --> Voice --> Groq
+    Chat --> ChatR --> Runtime
+    Runtime -->|read-only| Composio
+    Runtime -->|write| Store
+    Store --> Appr
+    Appr --> ApprR --> Composio
+    ApprR --> Store
+    Store --> PG
+    Intg --> Composio
+    ChatR --> Play
+    Play -.->|synthesize| Gemini
+    Composio --> Google[Google Workspace]
+    Composio --> MS[Microsoft 365]
 ```
 
-## Finalized Stack
+The agent runtime classifies each turn against a stable internal tool surface (`GMAIL_SEND_EMAIL`, `GOOGLECALENDAR_CREATE_EVENT`, `GOOGLECALENDAR_FIND_EVENT`, and the Drive/Outlook/Teams/OneDrive slugs the broker recognizes) and decides read versus write. Writes produce a tool proposal plus a pending approval; reads execute directly through the Composio client. The client is resolved per user, matched to a connected account, and only invoked once a ready account exists.
 
-### Mobile
-- React Native + Expo
-- assistant-ui
-- Zustand
+DeepAgents on LangGraph is the orchestration layer the architecture is designed around — a graph of `intent_router → account_guard → planner → approval_guard → executor → summarizer`. The backend currently ships a deterministic intent router that enforces the same approval-gated contract and tool surface, which is the layer DeepAgents slots into next.
 
-### Backend
-- FastAPI
-- DeepAgents
-- Supabase Postgres
-- Object storage
+## Stack
 
-### Integrations
-- Composio for Google Workspace and Microsoft 365 actions
-- Composio CLI for local QA and tool discovery
+| Layer | Choice |
+|-------|--------|
+| Mobile | Expo (React Native), assistant-ui, Zustand, expo-av, expo-speech |
+| Backend | FastAPI, Pydantic, SQLAlchemy |
+| Agent orchestration | DeepAgents (LangGraph) target; deterministic intent router shipped |
+| Integrations | Composio for Google Workspace and Microsoft 365 |
+| Speech-to-text | Groq Whisper (`whisper-large-v3-turbo`) |
+| Text-to-speech | Gemini TTS (`gemini-2.5-flash-preview-tts`) |
+| Reasoning model | Gemini 2.5 Flash (provider-configurable) |
+| Data and state | Supabase Postgres, with an in-memory fallback store |
+| Object storage | Supabase Storage or S3-compatible |
 
-### Voice and Model Providers
-- one primary LLM provider
-- one primary STT provider
-- one primary TTS provider
+Providers are selected through environment variables, not hard-coded — STT, TTS, and the LLM can each be swapped to OpenAI, Deepgram, ElevenLabs, or Google without code changes.
 
-These are intentionally configurable through environment variables instead of being hard-coded in the architecture.
+## Quickstart
 
-## What Is Implemented
+The full environment contract is in [docs/ENVIRONMENT.md](docs/ENVIRONMENT.md), with a starter at [.env.example](.env.example). The backend reads, in order, `.env`, `apps/server/.env`, `.env.local`, then `apps/server/.env.local`; later files override earlier ones. The simplest setup is a single root `.env.local`.
 
-### Backend
-- health endpoint
-- chat endpoint
-- websocket stub
-- voice STT/TTS endpoints
-- Composio connection endpoints
-- approval confirm/reject flow
-- Supabase and Composio service wrappers
+Recommended first provider set:
 
-### Mobile
-- clean chat shell
-- assistant-ui runtime wrapper
-- voice status display
-- approval card flow
-- API client wiring
+```bash
+LLM_PROVIDER=google
+LLM_MODEL=gemini-2.5-flash
+STT_PROVIDER=groq
+STT_MODEL=whisper-large-v3-turbo
+TTS_PROVIDER=google
+TTS_MODEL=gemini-2.5-flash-preview-tts
+TTS_VOICE=Kore
+```
 
-Current reality:
-- the checked-in mobile scaffold still behaves like a chat-first / hold-to-talk shell
-- the new LLD now defines the target wake-word, background-listening, and follow-up conversation architecture
-- native audio and wake-word work still needs to be built in a development build, not Expo Go
+The backend runs without secrets — it falls back to an in-memory store and dry-run tool execution — so you can bring it up first and add keys as you connect real services.
 
-The current backend is scaffolded to run in a safe dry-run mode when Composio or provider keys are missing.
-
-## Environment Setup
-
-The full environment contract is documented in [ENVIRONMENT.md](/Users/mugilansakthivel/Developer/voice/docs/ENVIRONMENT.md), and a starter file exists at [.env.example](/Users/mugilansakthivel/Developer/voice/.env.example).
-
-The minimum values needed to start implementation are:
-- `DATABASE_URL`
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `ENCRYPTION_KEY`
-- `COMPOSIO_API_KEY`
-- `COMPOSIO_WEBHOOK_SECRET`
-- one LLM provider and model
-- one STT provider and model
-- one TTS provider, model, and voice
-- `EXPO_PUBLIC_API_URL`
-- `EXPO_PUBLIC_WS_URL`
-
-## Run Locally
-
-### Backend
+**Backend**
 
 ```bash
 cd apps/server
@@ -124,7 +116,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### Mobile
+**Mobile**
 
 ```bash
 cd apps/mobile
@@ -132,15 +124,29 @@ npm install
 npm run start
 ```
 
-## Recommended Build Order
+Point the client at the backend with `EXPO_PUBLIC_API_URL` and `EXPO_PUBLIC_WS_URL`. Voice capture, wake word, and background listening require a development build rather than Expo Go.
 
-1. Backend skeleton with auth, threads, approvals, and Composio account linking.
-2. Mobile shell with clean chat UI, approvals, and integrations screen.
-3. Google Calendar and Gmail flows.
-4. Real voice pipeline with STT, TTS, and short spoken results.
-5. Wake word, VAD, follow-up listening, and background listening mode.
-6. Outlook, Calendar, Drive, Docs, Sheets, Teams, OneDrive, and To Do expansion.
+## Status
 
-## Next Step
+This is a portfolio project and a working full-stack scaffold, not a shipped product.
 
-The scaffold is ready. The next useful input from you is the real environment values for Supabase, Composio, and the voice/model providers you want first, so I can replace the dry-run service behavior with live integrations.
+Working end to end today:
+
+- Voice capture, real Groq Whisper transcription, and Gemini TTS playback on device
+- Chat, threads, and the approval confirm/reject flow, with Postgres or in-memory persistence
+- Gmail and Google Calendar happy paths through Composio, with dry-run fallback when unconfigured
+- Composio account linking and status resolution on the Integrations screen
+- A backend test suite covering health, chat flow, approvals, voice, integrations, and the store
+
+Designed and next in line:
+
+- DeepAgents/LangGraph replacing the deterministic router
+- On-device wake word, VAD, and armed background listening (needs a native development build)
+- Drive, Docs, Sheets, Outlook, Teams, OneDrive, and To Do coverage
+- Retry queues, webhook-driven reconnect, and production observability
+
+Architecture and design detail live in [docs/ARCHITECTURE-v2.md](docs/ARCHITECTURE-v2.md), [docs/LLD-Voice-AI-Agent.md](docs/LLD-Voice-AI-Agent.md), and [docs/UI-SYSTEM.md](docs/UI-SYSTEM.md).
+
+---
+
+Built by Mugilan Sakthivel — [mugilans.in](https://mugilans.in)
